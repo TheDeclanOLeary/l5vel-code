@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Robot Control Dashboard</title>
+    <script src="/rtcbot.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #1e1e1e; color: white; margin: 0; padding: 20px; }
+        .dashboard {
+            display: grid;
+            grid-template-columns: 250px 1fr 300px;
+            grid-template-rows: auto 80px;
+            gap: 20px;
+            height: 90vh;
+        }
+        .panel { background: #2d2d2d; padding: 15px; border-radius: 8px; }
+        
+        /* Video Zone */
+        .video-zone { text-align: center; }
+        video { width: 100%; max-width: 800px; background: #000; border-radius: 4px; }
+        
+        /* Drive Zone */
+        .joystick-container { width: 200px; height: 200px; position: relative; margin: 20px auto; background: #3d3d3d; border-radius: 50%; }
+        .slider-container { margin-top: 20px; text-align: center; }
+        input[type=range] { width: 90%; }
+
+        /* Arm Zone */
+        .joint-control { margin-bottom: 15px; }
+        .joint-control label { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; }
+
+        /* Utility Zone */
+        .utility-zone { grid-column: 1 / -1; display: flex; justify-content: center; gap: 20px; align-items: center; }
+        .btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn-estop { background: #dc3545; color: white; font-size: 18px; padding: 15px 30px; }
+        .btn-preset { background: #0d6efd; color: white; }
+	/* Arm Faders Layout */
+.arm-faders {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 220px;
+    margin-top: 15px;
+}
+.fader-track {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 50px;
+}
+.nipple-zone {
+    width: 40px;
+    height: 140px;
+    background: #3d3d3d;
+    border-radius: 20px;
+    position: relative;
+    margin: 10px 0;
+    /* Prevent default mobile browser scrolling when dragging */
+    touch-action: none; 
+}
+.nipple-zone-horizontal {
+    width: 140px;
+    height: 40px;
+    background: #3d3d3d;
+    border-radius: 20px;
+    position: relative;
+    margin: 10px auto;
+    /* Prevent default mobile browser scrolling when dragging */
+    touch-action: none; 
+}
+.fader-label { font-size: 11px; text-transform: uppercase; color: #aaa; }
+.fader-val { font-size: 14px; font-family: monospace; color: #0d6efd; }
+    </style>
+</head>
+<body>
+
+<div class="dashboard">
+    <div class="panel">
+        <h3>Drive Control</h3>
+        <div id="joystick-zone" class="joystick-container"></div>
+	<div class="slider-container">
+    <span class="fader-label">Rotation (Yaw)</span>
+    <div id="nipple-yaw" class="nipple-zone-horizontal"></div>
+    <span id="val-yaw" class="fader-val" style="display:block;">0.00</span>
+</div>
+       </div>
+    </div>
+
+    <div class="panel video-zone">
+        <h3>Main Camera</h3>
+        <video autoplay playsinline muted></video>
+        <div id="connection-status" style="margin-top: 10px; color: #ffc107;">Connecting to Robot...</div>
+    </div>
+
+    <div class="panel">
+    <h3>Arm Manipulator</h3>
+    <div class="arm-faders">
+        <div class="fader-track">
+            <span class="fader-label">Base</span>
+            <div id="nipple-base" class="nipple-zone"></div>
+            <span id="val-base" class="fader-val">0.0</span>
+        </div>
+        <div class="fader-track">
+            <span class="fader-label">Shoulder</span>
+            <div id="nipple-shoulder" class="nipple-zone"></div>
+            <span id="val-shoulder" class="fader-val">0.0</span>
+        </div>
+        <div class="fader-track">
+            <span class="fader-label">Elbow</span>
+            <div id="nipple-elbow" class="nipple-zone"></div>
+            <span id="val-elbow" class="fader-val">0.0</span>
+        </div>
+        <div class="fader-track">
+            <span class="fader-label">Pitch</span>
+            <div id="nipple-wpitch" class="nipple-zone"></div>
+            <span id="val-wpitch" class="fader-val">0.0</span>
+        </div>
+        <div class="fader-track">
+            <span class="fader-label">Roll</span>
+            <div id="nipple-wroll" class="nipple-zone"></div>
+            <span id="val-wroll" class="fader-val">0.0</span>
+        </div>
+    </div>
+</div>
+
+    <div class="panel utility-zone">
+        <button class="btn btn-estop" id="btn-estop">EMERGENCY STOP</button>
+        <button class="btn btn-preset" onclick="sendPreset('home')">Home Arm</button>
+        <button class="btn btn-preset" onclick="sendPreset('stow')">Stow Arm</button>
+    </div>
+</div>
+<script>
+    const conn = new rtcbot.RTCConnection();
+    const statusText = document.getElementById("connection-status");
+
+    // --- 1. Video Handling ---
+    conn.video.subscribe(function (stream) {
+        document.querySelector("video").srcObject = stream;
+        statusText.innerText = "Connected & Streaming";
+        statusText.style.color = "#198754";
+    });
+
+    // --- 2. Drive Controls (Nipple.js & Yaw Slider) ---
+    let driveState = { x: 0, y: 0, yaw: 0 };
+
+    const joystick = nipplejs.create({
+        zone: document.getElementById('joystick-zone'),
+        mode: 'static',
+        position: { left: '50%', top: '50%' },
+        color: 'white'
+    });
+
+    joystick.on('move', function (evt, data) {
+        const distance = data.distance / 100; 
+        driveState.x = Math.cos(data.angle.radian) * distance;
+        driveState.y = Math.sin(data.angle.radian) * distance;
+    });
+
+    joystick.on('end', function () {
+        driveState.x = 0;
+        driveState.y = 0;
+    });
+
+    const yawSlider = document.getElementById('yaw-slider');
+// --- Horizontal Yaw Control (Nipple.js) ---
+const yawManager = nipplejs.create({
+    zone: document.getElementById('nipple-yaw'),
+    mode: 'static',
+    position: { left: '50%', top: '50%' },
+    color: '#0d6efd',
+    size: 80,
+    lockX: true       // Forces 1D horizontal movement only
+});
+
+yawManager.on('move', (evt, data) => {
+    // Normalize the maximum 40px radius to a 0.0 -> 1.0 range
+    const distance = data.distance / 40; 
+    
+    // Math.cos of the angle gives us positive for RIGHT and negative for LEFT
+    let val = Math.cos(data.angle.radian) * distance;
+    
+    // Clamp strictly to -1.0 to 1.0
+    val = Math.max(-1, Math.min(1, val)); 
+
+    driveState.yaw = val;
+    
+    // Update UI readout
+    const displayVal = document.getElementById('val-yaw');
+    displayVal.innerText = (val > 0 ? "+" : "") + val.toFixed(2);
+});
+
+yawManager.on('end', () => {
+    // Guaranteed snap-back to 0 on release
+    driveState.yaw = 0;
+    document.getElementById('val-yaw').innerText = "0.00";
+});
+
+	// --- 3. Arm Controls (Nipple.js 1D Faders) ---
+const joints = ['base', 'shoulder', 'elbow', 'wpitch', 'wroll'];
+let armImpulseState = { base: 0, shoulder: 0, elbow: 0, wpitch: 0, wroll: 0 };
+
+joints.forEach(joint => {
+    const manager = nipplejs.create({
+        zone: document.getElementById(`nipple-${joint}`),
+        mode: 'static',
+        position: { left: '50%', top: '50%' },
+        color: '#0d6efd',
+        size: 80,         // Slightly smaller than the drive joystick
+        lockY: true       // Forces 1D vertical movement only
+    });
+
+    manager.on('move', (evt, data) => {
+        // Nipple.js maximum distance is size/2 (40px). 
+        // We divide by 40 to normalize the output to a 0.0 -> 1.0 range.
+        const distance = data.distance / 40; 
+        
+        // Math.sin of the angle gives us positive for UP and negative for DOWN
+        let val = Math.sin(data.angle.radian) * distance;
+        
+        // Clamp to strictly -1.0 to 1.0 to prevent floating point overshoot
+        val = Math.max(-1, Math.min(1, val)); 
+
+        armImpulseState[joint] = val;
+        
+        // Update UI
+        const displayVal = document.getElementById(`val-${joint}`);
+        displayVal.innerText = (val > 0 ? "+" : "") + val.toFixed(2);
+    });
+
+    manager.on('end', () => {
+        // Nipple.js guarantees this fires on touch release
+        armImpulseState[joint] = 0;
+        document.getElementById(`val-${joint}`).innerText = "0.00";
+    });
+});
+
+    function sendPreset(presetName) {
+        conn.put_nowait({ type: "arm_preset", target: presetName });
+    }
+
+    // --- 4. Emergency Stop ---
+    document.getElementById('btn-estop').addEventListener('click', () => {
+        conn.put_nowait({ type: "ESTOP", command: "HALT_ALL" });
+        alert("E-STOP TRIGGERED.");
+    });
+
+    // --- 5. Telemetry & Control Loops (20Hz / every 50ms) ---
+    setInterval(() => {
+        // Send drive commands if active
+        if (driveState.x !== 0 || driveState.y !== 0 || driveState.yaw !== 0) {
+            conn.put_nowait({ type: "drive", ...driveState });
+        }
+
+        // Check if any arm joint is receiving an impulse command
+        const hasArmImpulse = Object.values(armImpulseState).some(val => val !== 0);
+        if (hasArmImpulse) {
+            conn.put_nowait({ type: "arm_impulse", joints: armImpulseState });
+        }
+    }, 50);
+
+    // --- 6. WebRTC Initialization ---
+    async function connect() {
+        try {
+            let offer = await conn.getLocalDescription();
+            let response = await fetch("/connect", {
+                method: "POST",
+                cache: "no-cache",
+                body: JSON.stringify(offer),
+            });
+            await conn.setRemoteDescription(await response.json());
+        } catch (e) {
+            statusText.innerText = "Connection Failed.";
+            statusText.style.color = "#dc3545";
+        }
+    }
+    
+    connect();
+</script>
+</body>

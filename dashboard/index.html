@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Control Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="dashboard">
+        <div class="panel">
+            <h3>Drive Control</h3>
+            <div id="joystick-zone" class="joystick-container"></div>
+            <div class="slider-container">
+                <span class="fader-label">Rotation (Yaw)</span>
+                <div id="nipple-yaw" class="nipple-zone-horizontal"></div>
+                <span id="val-yaw" class="fader-val" style="display:block;">0.00</span>
+            </div>
+        </div>
+
+        <div class="panel video-zone">
+            <h3>Main Camera</h3>
+            <video autoplay playsinline muted></video>
+            <div id="connection-status" class="status-text">Connecting to Robot...</div>
+        </div>
+
+        <div class="panel">
+            <h3>Arm Manipulator</h3>
+            <div class="arm-faders">
+                <div class="fader-track">
+                    <span class="fader-label">Base</span>
+                    <div id="nipple-base" class="nipple-zone"></div>
+                    <span id="val-base" class="fader-val">0.00</span>
+                </div>
+                <div class="fader-track">
+                    <span class="fader-label">Shoulder</span>
+                    <div id="nipple-shoulder" class="nipple-zone"></div>
+                    <span id="val-shoulder" class="fader-val">0.00</span>
+                </div>
+                <div class="fader-track">
+                    <span class="fader-label">Elbow</span>
+                    <div id="nipple-elbow" class="nipple-zone"></div>
+                    <span id="val-elbow" class="fader-val">0.00</span>
+                </div>
+                <div class="fader-track">
+                    <span class="fader-label">Pitch</span>
+                    <div id="nipple-wpitch" class="nipple-zone"></div>
+                    <span id="val-wpitch" class="fader-val">0.00</span>
+                </div>
+                <div class="fader-track">
+                    <span class="fader-label">Roll</span>
+                    <div id="nipple-wroll" class="nipple-zone"></div>
+                    <span id="val-wroll" class="fader-val">0.00</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel utility-zone">
+            <button class="btn btn-estop" id="btn-estop">EMERGENCY STOP</button>
+            <button class="btn btn-preset" id="btn-home">Home Arm</button>
+            <button class="btn btn-preset" id="btn-stow">Stow Arm</button>
+        </div>
+    </div>
+
+    <script src="/rtcbot.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

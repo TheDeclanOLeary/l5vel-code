@@ -1,0 +1,14 @@
+# Node.js environments
+node_modules/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+myenv/
+
+# IDE settings and cache
+.vscode/
+.idea/
+.DS_Store
