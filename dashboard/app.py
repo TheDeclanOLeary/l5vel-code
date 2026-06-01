@@ -1,147 +1,114 @@
+import asyncio
+import os
 from aiohttp import web
-from rtcbot import RTCConnection, getRTCBotJS, CVCamera
+from rtcbot import RTCConnection, getRTCBotJS
 from xarm.wrapper import XArmAPI
-import ssl
-import time
 
-# --- Hardware Initialization & Safety Constraints ---
-# Replace with the static IP assigned to the physical xArm control box
-ROBOT_IP = '172.16.0.10'  
+# --- Configuration ---
+ROBOT_IP = '172.16.0.10'
+UPDATE_RATE_HZ = 20
+TICK_DURATION = 1.0 / UPDATE_RATE_HZ
+MAX_DEG_PER_SEC = 20.0 
+DEG_PER_TICK = MAX_DEG_PER_SEC * TICK_DURATION 
 
-print(f"Connecting to physical xArm at {ROBOT_IP}...")
-arm = XArmAPI(ROBOT_IP)
+current_impulses = {
+    'base': 0.0, 'shoulder': 0.0, 'elbow': 0.0, 
+    'wpitch': 0.0, 'wyaw': 0.0, 'wroll': 0.0
+}
+target_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+estop_active = False
 
-print("Running hardware safety protocol...")
-arm.clean_error()
-arm.motion_enable(enable=True)
+JOINT_MAPPING = {
+    'base': 0, 'shoulder': 1, 'elbow': 2, 
+    'wpitch': 3, 'wyaw': 4, 'wroll': 5  
+}
 
-# Set collision sensitivity (0-5, where 0 is off and 5 is highly sensitive)
-# Setting this to 3 ensures the arm halts if it strikes an unexpected object.
-arm.set_collision_sensitivity(3)
+# --- Robot Hardware Init ---
+print(f"Connecting to xArm at {ROBOT_IP}...")
+try:
+    arm = XArmAPI(ROBOT_IP)
+    arm.clean_error()
+    arm.motion_enable(enable=True)
+    code, initial_joints = arm.get_servo_angle(is_radian=False)
+    if code == 0:
+        target_joints = initial_joints.copy()
+    arm.set_mode(1) # Servoj Mode
+    arm.set_state(0)
+    print("Robot ready.")
+except Exception as err:
+    print(f"Robot connection skipped or failed: {err}. Running in simulation mode.")
 
-arm.set_mode(0)         # Position control mode
-arm.set_state(state=0)  # Ready/Sport state
-# --- Initialize State Tracker ---
-# Query the physical arm for its starting position
-code, init_angles = arm.get_servo_angle(is_radian=False)
-if code == 0:
-    current_target_angles = init_angles[:6]
-else:
-    current_target_angles = [-90.0, 0.0, 180.0, 0.0, 0.0, 90.0]
+# --- Asynchronous Control Loop ---
+async def robot_control_loop():
+    global target_joints, estop_active
+    while True:
+        if not estop_active:
+            for js_name, joint_idx in JOINT_MAPPING.items():
+                impulse = current_impulses[js_name]
+                target_joints[joint_idx] += impulse * DEG_PER_TICK
+            try:
+                arm.set_servo_angle_j(target_joints, is_radian=False)
+            except NameError:
+                pass 
+        await asyncio.sleep(TICK_DURATION)
 
-# Define how many degrees the arm should move per tick at full joystick deflection (1.0 or -1.0)
-MAX_DEG_PER_TICK = 2.0
-
-# Global throttle tracking for WebRTC inputs
-last_cmd_time = 0.0
-
-routes = web.RouteTableDef()
-camera = CVCamera()
+# --- WebRTC Data Handler ---
 conn = RTCConnection()
 
-conn.video.putSubscription(camera)
-
 @conn.subscribe
-def onMessage(msg):
-    global last_cmd_time, current_target_angles
-    msg_type = msg.get("type")
-    
-    if msg_type == "drive":
-        print(f"Drive: X={msg['x']:.2f}, Y={msg['y']:.2f}, Yaw={msg['yaw']:.2f}")
+def on_message(msg):
+    """
+    Called by rtcbot when a message arrives.
+    'msg' is automatically parsed into a dict by rtcbot.
+    """
+    global current_impulses, estop_active
+    try:
+        msg_type = msg.get("type")
+        if msg_type == "ESTOP":
+            print("ESTOP TRIGGERED!")
+            estop_active = True
+            try: arm.set_state(4)
+            except: pass
+        elif msg_type == "arm_impulse" and not estop_active:
+            for key in current_impulses.keys():
+                if key in msg:
+                    current_impulses[key] = float(msg[key])
+    except Exception as e:
+        print(f"Handler processing error: {e}")
 
-    elif msg_type == "arm_impulse":
-        current_time = time.time()
-        
-        if current_time - last_cmd_time > 0.1:
-            # Map the -1 to 1 impulses from the UI
-            impulses = [
-                msg.get('base', 0.0), 
-                msg.get('shoulder', 0.0), 
-                msg.get('elbow', 0.0), 
-                msg.get('wpitch', 0.0), 
-                msg.get('wroll', 0.0), 
-                0.0 # 6th joint padding
-            ]
-            
-            # Integrate impulses into absolute target angles
-            for i in range(6):
-                current_target_angles[i] += impulses[i] * MAX_DEG_PER_TICK
-                
-            # Send the newly calculated absolute position to the arm
-            arm.set_servo_angle(angles=current_target_angles, speed=20, wait=False)
-            last_cmd_time = current_time
-            
-    elif msg_type == "arm_preset":
-        target = msg['target']
-        print(f"Moving physical arm to preset: {target}")
-        
-        if target == "home":
-            current_target_angles = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            arm.set_servo_angle(angles=current_target_angles, speed=20, wait=False)
-        elif target == "stow":
-            current_target_angles = [0.0, -45.0, 0.0, 0.0, 45.0, 0.0]
-            arm.set_servo_angle(angles=current_target_angles, speed=20, wait=False)
-        else:
-            print(f"Unknown preset: {target}")
-            
-    elif msg_type == "ESTOP":
-        print("!!! HARDWARE EMERGENCY STOP ACTIVATED !!!")
-        arm.emergency_stop()
-        # Query real position after an ESTOP to resync the mathematical tracker
-        time.sleep(0.1)
-        code, safe_angles = arm.get_servo_angle(is_radian=False)
-        if code == 0:
-            current_target_angles = safe_angles[:6]
+# --- Web Server Routes ---
+app = web.Application()
 
-# --- Asset Routing Configuration ---
+async def index_handler(request):
+    with open("index.html", "r") as f:
+        return web.Response(text=f.read(), content_type="text/html")
 
-@routes.get("/")
-async def index(request):
-    # Explicitly serve index.html from the dist folder
-    with open("dist/index.html", "r") as f:
-        return web.Response(content_type="text/html", text=f.read())
-
-@routes.get("/styles.css")
-async def styles(request):
-    # Explicitly serve styles.css from the dist folder
-    with open("dist/styles.css", "r") as f:
-        return web.Response(content_type="text/css", text=f.read())
-
-@routes.get("/app.js")
-async def javascript(request):
-    # Explicitly serve app.js from the ROOT folder where it currently lives
-    with open("app.js", "r") as f:
-        return web.Response(content_type="application/javascript", text=f.read())
-
-@routes.get("/rtcbot.js")
-async def rtcbotjs(request):
-    # Serves the generated rtcbot library
+async def rtcbotjs_handler(request):
+    # Must use application/javascript content type to prevent browser blocking
     return web.Response(content_type="application/javascript", text=getRTCBotJS())
 
-# Fallback route for any other static assets (like images or icons) inside dist
-routes.static("/", "dist/")
+async def connect_handler(request):
+    """Handles the WebRTC SDP offer from app.js natively using aiohttp utilities."""
+    try:
+        # Await the JSON object sent from the browser fetch request
+        client_offer = await request.json()
+        
+        # Pass the offer to rtcbot to obtain the handshake layout
+        server_response = await conn.getLocalDescription(client_offer)
+        
+        # Return cleanly using rtcbot's preferred aiohttp output type
+        return web.json_response(server_response)
+        
+    except Exception as e:
+        print(f"Handshake tracking failed error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
-@routes.post("/connect")
-async def connect(request):
-    clientOffer = await request.json()
-    serverResponse = await conn.getLocalDescription(clientOffer)
-    return web.json_response(serverResponse)
-
-async def cleanup(app=None):
-    print("Safely shutting down hardware connections...")
-    await conn.close()
-    camera.close()
-    
-    # Ensure the arm is parked or errors are cleared before disconnecting
-    arm.clean_error()
-    arm.disconnect()
-
-app = web.Application()
-app.add_routes(routes)
-app.on_shutdown.append(cleanup)
+app.router.add_get("/", index_handler)
+app.router.add_get("/rtcbot.js", rtcbotjs_handler)
+app.router.add_post("/connect", connect_handler)
+app.router.add_static("/", path=os.path.dirname(os.path.abspath(__file__)), name='static')
 
 if __name__ == "__main__":
-    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ssl_context.load_cert_chain('cert.pem', 'key.pem')
-
-    web.run_app(app, host="0.0.0.0", port=8080, ssl_context=ssl_context)
+    asyncio.ensure_future(robot_control_loop())
+    print("Serving dashboard on http://localhost:8080")
+    web.run_app(app, port=8080)
