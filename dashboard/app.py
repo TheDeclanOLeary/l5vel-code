@@ -41,15 +41,36 @@ except Exception as err:
 # --- Asynchronous Control Loop ---
 async def robot_control_loop():
     global target_joints, estop_active
+    
+    debug_tick = 0 
+    print("[System] Robot control loop successfully started!")
+    
     while True:
-        if not estop_active:
-            for js_name, joint_idx in JOINT_MAPPING.items():
-                impulse = current_impulses[js_name]
-                target_joints[joint_idx] += impulse * DEG_PER_TICK
-            try:
-                arm.set_servo_angle_j(target_joints, is_radian=False)
-            except NameError:
-                pass 
+        try:
+            if not estop_active:
+                # 1. Calculate new targets
+                for js_name, joint_idx in JOINT_MAPPING.items():
+                    impulse = current_impulses[js_name]
+                    target_joints[joint_idx] += impulse * DEG_PER_TICK
+                
+                # 2. --- DEBUG TRACKING (Moved UP to guarantee execution) ---
+                debug_tick += 1
+                if debug_tick >= UPDATE_RATE_HZ:  # Triggers once per second
+                    print("\n--- DATA FLOW CHECK ---")
+                    print(f"IN (Impulses): {[round(current_impulses[k], 2) for k in JOINT_MAPPING.keys()]}")
+                    print(f"OUT (Targets): {[round(j, 2) for j in target_joints]}")
+                    debug_tick = 0
+
+                # 3. Hardware command (Safely checked)
+                if 'arm' in globals():
+                    # If arm exists, attempt to send the command
+                    arm.set_servo_angle_j(target_joints, is_radian=False)
+                    
+        except Exception as e:
+            # THIS is what was missing. If the SDK fails, it will now print exactly why.
+            print(f"\n[CRITICAL ERROR] The control loop caught an exception: {e}")
+            
+        # Yield back to the event loop so the web server doesn't freeze
         await asyncio.sleep(TICK_DURATION)
 
 # --- WebRTC Data Handler ---
@@ -65,7 +86,7 @@ def on_message(msg):
     try:
         msg_type = msg.get("type")
         if msg_type == "ESTOP":
-            print("ESTOP TRIGGERED!")
+            print("\n*** ESTOP TRIGGERED VIA WEBRTC ***\n")
             estop_active = True
             try: arm.set_state(4)
             except: pass
@@ -75,7 +96,6 @@ def on_message(msg):
                     current_impulses[key] = float(msg[key])
     except Exception as e:
         print(f"Handler processing error: {e}")
-
 # --- Web Server Routes ---
 app = web.Application()
 
@@ -84,23 +104,17 @@ async def index_handler(request):
         return web.Response(text=f.read(), content_type="text/html")
 
 async def rtcbotjs_handler(request):
-    # Must use application/javascript content type to prevent browser blocking
     return web.Response(content_type="application/javascript", text=getRTCBotJS())
 
 async def connect_handler(request):
-    """Handles the WebRTC SDP offer from app.js natively using aiohttp utilities."""
     try:
-        # Await the JSON object sent from the browser fetch request
+        print("\n[Handshake] Received SDP offer from client. Negotiating...")
         client_offer = await request.json()
-        
-        # Pass the offer to rtcbot to obtain the handshake layout
         server_response = await conn.getLocalDescription(client_offer)
-        
-        # Return cleanly using rtcbot's preferred aiohttp output type
+        print("[Handshake] Successfully generated local description. Sending to client.")
         return web.json_response(server_response)
-        
     except Exception as e:
-        print(f"Handshake tracking failed error: {e}")
+        print(f"[Handshake] Failed error: {e}")
         return web.json_response({"error": str(e)}, status=500)
 
 app.router.add_get("/", index_handler)
@@ -108,7 +122,19 @@ app.router.add_get("/rtcbot.js", rtcbotjs_handler)
 app.router.add_post("/connect", connect_handler)
 app.router.add_static("/", path=os.path.dirname(os.path.abspath(__file__)), name='static')
 
+
+# --- NEW: App Lifecycle Hooks ---
+async def start_background_tasks(app):
+    """Fired automatically by aiohttp when the server starts."""
+    print("[System] Injecting robot control loop into active event loop...")
+    # create_task ensures it runs on the web server's actual event loop
+    app['robot_loop'] = asyncio.create_task(robot_control_loop())
+
+# Register the startup hook
+app.on_startup.append(start_background_tasks)
+
+
 if __name__ == "__main__":
-    asyncio.ensure_future(robot_control_loop())
     print("Serving dashboard on http://localhost:8080")
+    # run_app handles the rest automatically now
     web.run_app(app, port=8080)
