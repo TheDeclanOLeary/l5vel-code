@@ -7,66 +7,44 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="dashboard">
-        <div class="panel">
-            <h3>Drive Control</h3>
-            <div id="joystick-zone" class="joystick-container"></div>
-            <div class="slider-container">
-                <span class="fader-label">Rotation (Yaw)</span>
-                <div id="nipple-yaw" class="nipple-zone-horizontal"></div>
-                <span id="val-yaw" class="fader-val" style="display:block;">0.00</span>
+	<div class="dashboard">
+    <div class="panel">
+        <h3>Translation (X, Y, Z)</h3>
+        <div id="joystick-zone" class="joystick-container"></div>
+        
+        <div class="slider-container">
+            <span class="fader-label">Z-Height (Up/Down)</span>
+            <div id="nipple-z" class="nipple-zone-horizontal"></div>
+            <span id="val-z" class="fader-val" style="display:block;">0.00</span>
+        </div>
+    </div>
+
+    <div class="panel video-zone">
+        <h3>Main Camera</h3>
+        <video autoplay playsinline muted></video>
+        <div id="connection-status" class="status-text">Connecting to Robot...</div>
+    </div>
+
+    <div class="panel">
+        <h3>Head Orientation</h3>
+        <div class="arm-faders" style="justify-content: center; gap: 40px;">
+            <div class="fader-track">
+                <span class="fader-label">Pitch</span>
+                <div id="nipple-pitch" class="nipple-zone"></div>
+                <span id="val-pitch" class="fader-val">0.00</span>
+            </div>
+            <div class="fader-track">
+                <span class="fader-label">Roll</span>
+                <div id="nipple-roll" class="nipple-zone"></div>
+                <span id="val-roll" class="fader-val">0.00</span>
             </div>
         </div>
-
-        <div class="panel video-zone">
-            <h3>Main Camera</h3>
-            <video autoplay playsinline muted></video>
-            <div id="connection-status" class="status-text">Connecting to Robot...</div>
-        </div>
-
-        <div class="panel">
-            <h3>Arm Manipulator</h3>
-		<div class="arm-faders">
-    <div class="fader-track">
-        <span class="fader-label">Base</span>
-        <div id="nipple-base" class="nipple-zone"></div>
-        <span id="val-base" class="fader-val">0.00</span>
-    </div>
-    <div class="fader-track">
-        <span class="fader-label">Shoulder</span>
-        <div id="nipple-shoulder" class="nipple-zone"></div>
-        <span id="val-shoulder" class="fader-val">0.00</span>
-    </div>
-    <div class="fader-track">
-        <span class="fader-label">Elbow</span>
-        <div id="nipple-elbow" class="nipple-zone"></div>
-        <span id="val-elbow" class="fader-val">0.00</span>
-    </div>
-    <div class="fader-track">
-        <span class="fader-label">Pitch</span>
-        <div id="nipple-wpitch" class="nipple-zone"></div>
-        <span id="val-wpitch" class="fader-val">0.00</span>
-    </div>
-    <div class="fader-track">
-        <span class="fader-label">Yaw</span>
-        <div id="nipple-wyaw" class="nipple-zone"></div>
-        <span id="val-wyaw" class="fader-val">0.00</span>
-    </div>
-    <div class="fader-track">
-        <span class="fader-label">Roll</span>
-        <div id="nipple-wroll" class="nipple-zone"></div>
-        <span id="val-wroll" class="fader-val">0.00</span>
-    </div>
+        <div class="utility-zone" style="margin-top: 30px; text-align: center;">
+    <button class="btn btn-estop" id="btn-estop" style="background: red; color: white;">EMERGENCY STOP</button>
+    <button class="btn btn-preset" id="btn-reset" style="background: #ffc107; color: black; margin-left: 10px;">Clear Error / Reset</button>
 </div>
-        </div>
-
-        <div class="panel utility-zone">
-            <button class="btn btn-estop" id="btn-estop">EMERGENCY STOP</button>
-            <button class="btn btn-preset" id="btn-home">Home Arm</button>
-            <button class="btn btn-preset" id="btn-stow">Stow Arm</button>
-        </div>
     </div>
-
+</div>		
     <script src="/rtcbot.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
     <script src="app.js"></script>

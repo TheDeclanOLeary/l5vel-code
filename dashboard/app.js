@@ -2,154 +2,117 @@ document.addEventListener("DOMContentLoaded", () => {
     const statusText = document.getElementById("connection-status");
     let conn;
 
-    try {
-        conn = new rtcbot.RTCConnection();
-    } catch (err) {
-        statusText.innerText = "WebRTC initialization failed.";
-        return;
-    }
+    try { conn = new rtcbot.RTCConnection(); } 
+    catch (err) { statusText.innerText = "WebRTC Failed."; return; }
 
-    conn.subscribe((msg) => {
-        console.log("Data from backend:", msg);
-    });
-
+    conn.subscribe((msg) => { console.log(msg); });
     conn.video.subscribe(function (stream) {
         document.querySelector("video").srcObject = stream;
         statusText.innerText = "Connected & Streaming";
-        statusText.style.color = "#198754";
     });
 
-    // --- 2. Drive Controls ---
-    let driveState = { x: 0, y: 0, yaw: 0 };
+    // --- Unified Cartesian State ---
+    let cartState = { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0 };
 
-    const mainJoystick = nipplejs.create({
-        zone: document.getElementById('joystick-zone'),
-        mode: 'static',
-        position: { left: '50%', top: '50%' }, 
-        color: 'white',
-        size: 200 // MATCHES CSS: 200px diameter (100px radius)
+    // 1. XY Joystick (Translation)
+    const xyJoy = nipplejs.create({
+        zone: document.getElementById('joystick-zone'), mode: 'static', position: { left: '50%', top: '50%' }, color: 'white', size: 200
     });
-
-    mainJoystick.on('move', (evt, data) => {
+    xyJoy.on('move', (evt, data) => {
         if (data && data.vector) {
-            let magnitude = data.distance / 100; // Normalize 0.0 to 1.0 based on radius
-            driveState.x = magnitude * (data.vector.x || 0);
-            driveState.y = magnitude * (data.vector.y || 0);
+            let mag = data.distance / 100; 
+            cartState.x = mag * (data.vector.y || 0); // Pushing UP (+y on joystick) maps to +X Forward on robot base
+            cartState.y = mag * (data.vector.x || 0); // Pushing RIGHT (+x on joystick) maps to -Y Right on robot base (adjust signs if inverted)
         }
     });
+    xyJoy.on('end', () => { cartState.x = 0; cartState.y = 0; });
 
-    mainJoystick.on('end', () => { driveState.x = 0; driveState.y = 0; });
-
-    const yawManager = nipplejs.create({
-        zone: document.getElementById('nipple-yaw'), 
-        mode: 'static',
-        position: { left: '50%', top: '20px' }, 
-        color: '#0d6efd', 
-        size: 140, // MATCHES CSS: 140px wide track (70px radius)
-        lockX: true // RESTORED: Locks movement TO the X-axis (Horizontal)
+    // 2. Z-Height Slider
+    const zJoy = nipplejs.create({
+        zone: document.getElementById('nipple-z'), mode: 'static', position: { left: '50%', top: '20px' }, color: '#0d6efd', size: 140, lockX: true
     });
-
-    yawManager.on('move', (evt, data) => {
+    zJoy.on('move', (evt, data) => {
         if (data && data.vector && typeof data.vector.x !== 'undefined') {
-            let magnitude = data.distance / 70; 
-            driveState.yaw = magnitude * data.vector.x;
-            
-            const displayVal = document.getElementById('val-yaw');
-            if (displayVal) displayVal.innerText = (driveState.yaw > 0 ? "+" : "") + driveState.yaw.toFixed(2);
+            cartState.z = (data.distance / 70) * data.vector.x;
+            document.getElementById('val-z').innerText = cartState.z.toFixed(2);
         }
     });
+    zJoy.on('end', () => { cartState.z = 0; document.getElementById('val-z').innerText = "0.00"; });
 
-    yawManager.on('end', () => { 
-        driveState.yaw = 0; 
-        const displayVal = document.getElementById('val-yaw');
-        if (displayVal) displayVal.innerText = "0.00";
-    });
-
-    // --- 3. Arm Controls ---
-    const joints = ['base', 'shoulder', 'elbow', 'wpitch', 'wyaw', 'wroll'];
-    let armImpulseState = { base: 0, shoulder: 0, elbow: 0, wpitch: 0, wyaw: 0, wroll: 0 };
-
-    joints.forEach(joint => {
-        const zoneEl = document.getElementById(`nipple-${joint}`);
-        if (!zoneEl) return;
-        
-        const manager = nipplejs.create({
-            zone: zoneEl, 
-            mode: 'static',
-            position: { left: '20px', top: '70px' }, // Dead center of 40x140 container
-            color: '#0d6efd', 
-            size: 140, // MATCHES CSS: 140px tall track (70px radius)
-            lockY: true // RESTORED: Locks movement TO the Y-axis (Vertical)
+    // 3. Head Pitch & Roll (Vertical Faders)
+    ['pitch', 'roll'].forEach(orient => {
+        const joy = nipplejs.create({
+            zone: document.getElementById(`nipple-${orient}`), mode: 'static', position: { left: '20px', top: '70px' }, color: '#0d6efd', size: 140, lockY: true
         });
-
-        manager.on('move', (evt, data) => {
+        joy.on('move', (evt, data) => {
             if (data && data.vector && typeof data.vector.y !== 'undefined') {
-                let magnitude = data.distance / 70; 
-                let val = magnitude * data.vector.y;
-                
-                armImpulseState[joint] = val;
-                
-                const displayVal = document.getElementById(`val-${joint}`);
-                if (displayVal) displayVal.innerText = (val > 0 ? "+" : "") + val.toFixed(2);
+                cartState[orient] = (data.distance / 70) * data.vector.y;
+                document.getElementById(`val-${orient}`).innerText = cartState[orient].toFixed(2);
             }
         });
-
-        manager.on('end', () => { 
-            armImpulseState[joint] = 0; 
-            const displayVal = document.getElementById(`val-${joint}`);
-            if (displayVal) displayVal.innerText = "0.00";
-        });
+        joy.on('end', () => { cartState[orient] = 0; document.getElementById(`val-${orient}`).innerText = "0.00"; });
     });
 
-    // --- 4. Utility & Presets ---
+    // 4. Utility & Telemetry
     document.getElementById('btn-estop').addEventListener('click', () => {
-        driveState = { x: 0, y: 0, yaw: 0 };
-        joints.forEach(j => armImpulseState[j] = 0);
-        conn.put_nowait({ type: "ESTOP", command: "HALT_ALL" });
-        stopTelemetryLoop();
+        cartState = { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0 };
+        conn.put_nowait({ type: "ESTOP" });
+        clearInterval(telemetryInterval);
         alert("E-STOP TRIGGERED.");
     });
+	// Add this right below your ESTOP event listener
+document.getElementById('btn-reset').addEventListener('click', () => {
+    // Send the manual reset command to the backend
+    conn.put_nowait({ type: "RESET_ERROR" });
+    
+    // Ensure the joysticks are logically zeroed out on the frontend
+    cartState = { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0 };
+    
+    // Restart the telemetry loop if it was killed by an ESTOP
+    startTelemetryLoop();
+    
+    alert("Clear Error command sent. Ensure the workspace is clear.");
+});
 
-    // --- 5. Telemetry Transmission Loop ---
     let telemetryInterval = null;
     function startTelemetryLoop() {
         if (telemetryInterval !== null) return;
-        
         telemetryInterval = setInterval(() => {
-            conn.put_nowait({ type: "drive", ...driveState });
-            setTimeout(() => {
-                conn.put_nowait({ type: "arm_impulse", ...armImpulseState });
-            }, 20);
+            // Send the unified Cartesian object
+            conn.put_nowait({ type: "cartesian_impulse", ...cartState });
         }, 50); 
     }
-    function stopTelemetryLoop() { clearInterval(telemetryInterval); telemetryInterval = null; }
 
-    // --- 6. WebRTC Handshake ---
+// --- 5. Connection ---
     async function connect() {
         try {
             let offer = await conn.getLocalDescription();
-            let response = await fetch("/connect", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(offer),
+            
+            let response = await fetch("/connect", { 
+                method: "POST", 
+                headers: { "Content-Type": "application/json" }, 
+                body: JSON.stringify(offer) 
             });
             
-            let rawText = await response.text();
-            let sanitizedText = rawText.trim();
-            let remoteDesc = JSON.parse(sanitizedText);
-            await conn.setRemoteDescription(remoteDesc);
+            await conn.setRemoteDescription(JSON.parse((await response.text()).trim()));
             
+            // Start pumping data
             startTelemetryLoop();
+            
+            // RESTORED: Update the UI to reflect the successful network state
             if (statusText.innerText !== "Connected & Streaming") {
                 statusText.innerText = "Data Channel Open";
-                statusText.style.color = "#198754";
+                statusText.style.color = "#198754"; // Green
             }
+            console.log("Handshake completed successfully! Connected to robot loop.");
+            
         } catch (e) {
             console.error("WebRTC Handshake failed:", e);
+            // RESTORED: Update the UI to reflect a true network failure
             statusText.innerText = "Connection Failed.";
-            statusText.style.color = "#dc3545";
+            statusText.style.color = "#dc3545"; // Red
         }
     }
-
+    
     connect();
 });
