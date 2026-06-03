@@ -5,7 +5,21 @@ document.addEventListener("DOMContentLoaded", () => {
     try { conn = new rtcbot.RTCConnection(); } 
     catch (err) { statusText.innerText = "WebRTC Failed."; return; }
 
-    conn.subscribe((msg) => { console.log(msg); });
+// --- WebRTC Incoming Message Listener ---
+    conn.subscribe((msg) => {
+        console.log("Incoming message from backend:", msg);
+        
+        // Check if the packet is a hardware fault notice
+        if (msg && msg.type === "ROBOT_FAULT") {
+            // 1. Alert the operator immediately via a modal popup
+            alert(`[ROBOT FAULT] ${msg.message}\n\nPlease verify workspace is clear, let go of joysticks, and click 'Clear Error'.`);
+            
+            // 2. Change the dashboard text to highlight the error state
+            statusText.innerText = "ROBOT FAULTED / STOPPED";
+            statusText.style.color = "#dc3545"; // Red
+        }
+    });
+
     conn.video.subscribe(function (stream) {
         document.querySelector("video").srcObject = stream;
         statusText.innerText = "Connected & Streaming";
@@ -63,7 +77,7 @@ document.addEventListener("DOMContentLoaded", () => {
 	// Add this right below your ESTOP event listener
 document.getElementById('btn-reset').addEventListener('click', () => {
     // Send the manual reset command to the backend
-    conn.put_nowait({ type: "RESET_ERROR" });
+    conn.put_nowait({ type: "CLEAR_ERROR" });
     
     // Ensure the joysticks are logically zeroed out on the frontend
     cartState = { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0 };
