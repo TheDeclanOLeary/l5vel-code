@@ -14,7 +14,7 @@ UPDATE_RATE_HZ = 20
 TICK_DURATION = 1.0 / UPDATE_RATE_HZ
 
 X_MIN, X_MAX = -520.0, 520.0
-Y_MIN, Y_MAX = -520.0, 0.0
+Y_MIN, Y_MAX = -520.0, 300.0
 Z_MIN, Z_MAX = 50.0, 680.0
 
 MAX_REACH_FOLDED = 420.0
@@ -121,11 +121,46 @@ async def robot_control_loop():
                 ):
                     current_impulses["z"] = 0.0
 
-                # Dynamic Spherical Leash
+                # --- Dynamic Spherical Leash (Vector Dot Product Fix) ---
                 next_rel_z = next_z - SHOULDER_Z_OFFSET
                 radius = math.sqrt(next_x**2 + next_y**2 + next_rel_z**2)
-                pitch_rads = math.radians(target_pose[4])
-                extension_ratio = abs(math.sin(pitch_rads))
+
+                if radius > 0:  # Prevent division by zero
+                    # 1. Calculate normalized outward vector from shoulder to TCP
+                    u_shoulder_x = next_x / radius
+                    u_shoulder_y = next_y / radius
+                    u_shoulder_z = next_rel_z / radius
+
+                    # 2. Calculate Tool's Forward Vector from Roll, Pitch, Yaw
+                    r = math.radians(target_pose[3])
+                    p = math.radians(target_pose[4])
+                    y = math.radians(target_pose[5])
+
+                    # Apply standard Z-Y-X intrinsic rotation to a forward-facing vector
+                    t_x = math.cos(y) * math.sin(p) * math.cos(r) + math.sin(
+                        y
+                    ) * math.sin(r)
+                    t_y = math.sin(y) * math.sin(p) * math.cos(r) - math.cos(
+                        y
+                    ) * math.sin(r)
+                    t_z = math.cos(p) * math.cos(r)
+
+                    # 3. Dot product calculates true 3D alignment (-1.0 to 1.0)
+                    # 1.0 = Tool points straight out away from base
+                    # 0.0 = Tool points perpendicular (down/sideways)
+                    # -1.0 = Tool points backward toward base
+                    alignment = (
+                        (u_shoulder_x * t_x)
+                        + (u_shoulder_y * t_y)
+                        + (u_shoulder_z * t_z)
+                    )
+
+                    # Clamp to 0-1 so we only scale up when reaching outward
+                    extension_ratio = max(0.0, alignment)
+                else:
+                    extension_ratio = 0.0
+
+                # Expand the safe sphere dynamically based on true 3D tool alignment
                 dynamic_max_reach = MAX_REACH_FOLDED + (
                     (MAX_REACH_EXTENDED - MAX_REACH_FOLDED) * extension_ratio
                 )
@@ -137,10 +172,12 @@ async def robot_control_loop():
                         + (target_pose[1] * current_impulses["y"])
                         + (current_rel_z * current_impulses["z"])
                     )
+
+                    # Only block movement if the impulse pushes the arm further OUT
                     if dot_product > 0:
-                        current_impulses["x"] = current_impulses[
-                            "y"
-                        ] = current_impulses["z"] = 0.0
+                        current_impulses["x"] = 0.0
+                        current_impulses["y"] = 0.0
+                        current_impulses["z"] = 0.0
 
                 # 2. APPLY FILTERED IMPULSES
                 target_pose[0] += current_impulses["x"] * MM_PER_TICK
