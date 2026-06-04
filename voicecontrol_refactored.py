@@ -1,7 +1,9 @@
 import io
-import json
 import threading
 import time
+from collections import deque
+from typing import Literal, Optional
+
 import numpy as np
 import pyaudio
 import requests
@@ -10,8 +12,6 @@ import torch
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
-from collections import deque
 
 # ==============================================================================
 # GLOBAL SYSTEM CONFIGURATIONS
@@ -19,34 +19,38 @@ from collections import deque
 CONFIG = {
     # API & Core Model Identifier
     "GEMINI_MODEL": "gemini-3-flash-preview",
-    
     # Audio Ingestion Parameters
     "AUDIO_FORMAT": pyaudio.paInt16,
     "CHANNELS": 1,
     "SAMPLE_RATE": 16000,
     "CHUNK_SIZE": 512,
-    
     # Algorithmic VAD & Recording Thresholds
-    "AUDIO_ENERGY_FLOOR": 300.0,       # Initial amplitude floor to reject static/TV
-    "SILENCE_THRESHOLD_MS": 2000,      # Duration of silent frames to trigger execution
-    "VAD_CONFIDENCE_GATE": 0.5,        # Neural network probability activation threshold
+    "AUDIO_ENERGY_FLOOR": 300.0,  # Initial amplitude floor to reject static/TV
+    "SILENCE_THRESHOLD_MS": 2000,  # Duration of silent frames to trigger execution
+    "VAD_CONFIDENCE_GATE": 0.5,  # Neural network probability activation threshold
     "DYNAMIC_FLOOR_ENABLED": True,
-    "MIN_ENERGY_FLOOR": 100.0,         # Absolute lowest threshold in a silent room
-    "MAX_ENERGY_FLOOR": 1000.0,        # Hard ceiling to prevent lockout during loud events 
-    "NOISE_MARGIN_PADDING": 250.0,    # Padding above ambient noise to trigger wake
-    "CALIBRATION_WINDOW_CHUNKS": 100 # Number of non-speech frames to average
+    "MIN_ENERGY_FLOOR": 100.0,  # Absolute lowest threshold in a silent room
+    "MAX_ENERGY_FLOOR": 1000.0,  # Hard ceiling to prevent lockout during loud events
+    "NOISE_MARGIN_PADDING": 250.0,  # Padding above ambient noise to trigger wake
+    "CALIBRATION_WINDOW_CHUNKS": 100,  # Number of non-speech frames to average
 }
 
 # Initialize Google GenAI Developer Platform Client
 client = genai.Client()
 
+
 # ==============================================================================
 # PANTHEON SCHEMAS & SYSTEM INSTRUCTIONS
 # ==============================================================================
 class AudioAnalysis(BaseModel):
-    is_addressed: bool = Field(description="True if a voice addresses the robot. False for background TV/noise.")
-    intent_type: Optional[Literal["COMMAND", "CONVERSATIONAL", "UNKNOWN"]] = Field(default=None)
+    is_addressed: bool = Field(
+        description="True if a voice addresses the robot. False for background TV/noise."
+    )
+    intent_type: Optional[Literal["COMMAND", "CONVERSATIONAL", "UNKNOWN"]] = Field(
+        default=None
+    )
     cleaned_transcript: Optional[str] = Field(default=None)
+
 
 SYSTEM_PROMPT = """
 Role: Acoustic front-end processor for an assistive robot (Sbot).
@@ -64,40 +68,81 @@ Line 2: [COMMAND, CONVERSATIONAL, or UNKNOWN]
         - UNKNOWN: Speech is not directed to the robot, or is completely unintelligible.
 Line 3: [Cleaned Transcript or None] (Exact words spoken by the user. Write None if no clear phrase is directed to the robot. Do not hallucinate.)
 """
-#CRITICAL EXECUTION:
-#If 'is_addressed' is False, do not try to transcribe the background noise. Set 'intent_type' and 'cleaned_transcript' to null.
+# CRITICAL EXECUTION:
+# If 'is_addressed' is False, do not try to transcribe the background noise. Set 'intent_type' and 'cleaned_transcript' to null.
 RESPONSE_CONFIG = types.GenerateContentConfig(
     system_instruction=SYSTEM_PROMPT,
     temperature=0.0,
-    thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")
+    thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"),
 )
 # ==============================================================================
 # DOWNSTREAM ACTUATION OVERRIDES (SYSTEM ENDPOINTS)
 # ==============================================================================
+# Inside voicecontrol_refactored.py
+
+
 def publish_to_control_loop(raw_text_response: str):
-    """Parses plain line output with zero regex/JSON decoding latency overhead."""
+    """Parses plain line output and sends it to the Cartesian backend via HTTP."""
+    # 1. Print the raw output to expose hidden safety refusals or markdown blocks
+    print(f"\n[DEBUG] Raw LLM Response:\n{raw_text_response}")
+    
     try:
-        # Split text by newline boundaries
-        lines = [line.strip() for line in raw_text_response.strip().split("\n") if line.strip()]
+        # Strip out any markdown code block artifacts that shift line indices
+        clean_text = raw_text_response.replace("```json", "").replace("```text", "").replace("```", "").strip()
+
+        lines = [
+            line.strip()
+            for line in clean_text.split("\n")
+            if line.strip()
+        ]
         if len(lines) < 3:
+            print("[CONTROL LOOP ERROR] LLM returned fewer than 3 lines. Cannot parse.")
             return
 
-        is_addressed = lines[0].lower() == "true"
-        intent_type = lines[1].upper()
-        transcript = lines[2]
-
-        print(f"\n[CONTROL LOOP] Addressed: {is_addressed} | Intent: {intent_type} | Text: {transcript}")
+        # 2. Robust parsing to handle potential LLM prefixes and multi-line transcripts
+        is_addressed = "true" in lines[0].lower()
+        intent_type = lines[1].replace("Line 2:", "").strip().upper()
         
-        if is_addressed and intent_type == "COMMAND" and transcript != "None":
-            print(f"[CONTROL LOOP] Directing task execution node for: '{transcript}'")
-            
+        # Join any trailing lines so long sentences aren't truncated
+        transcript_raw = " ".join(lines[2:])
+        transcript = transcript_raw.replace("Line 3:", "").strip()
+
+        print(
+            f"\n[CONTROL LOOP] Addressed: {is_addressed} | Intent: {intent_type} | Text: {transcript}"
+        )
+
+        if is_addressed and "COMMAND" in intent_type and transcript.lower() != "none":
+            print(f"[CONTROL LOOP] Dispatching task execution node for: '{transcript}'")
+
+            # --- NEW API CALL TO APP.PY ---
+            payload = {"action": "COMMAND", "transcript": transcript}
+            try:
+                # 0.2s timeout prevents blocking the audio loop if the arm backend is down
+                requests.post(
+                    "http://localhost:8080/voice_in", json=payload, timeout=0.2
+                )
+            except requests.exceptions.RequestException as e:
+                print(f"[NETWORK DROP] Could not reach the robot backend: {e}")
+
     except Exception as e:
         print(f"[CONTROL LOOP ERROR] Could not parse plain text response: {e}")
+
+
 def trigger_local_estop():
     """Immediate hardware kill switch bypassing the network graph."""
     print("\n!!! [CRITICAL EMERGENCY STOP DETECTED] !!!")
+
+    # Send network kill signal to app.py
+    try:
+        requests.post(
+            "http://localhost:8080/voice_in", json={"action": "ESTOP"}, timeout=0.2
+        )
+    except:
+        pass  # Fail silently if network is down, physical locks take priority
+
     print("[HARDWARE] Sending electronic brake signals to Swerve Drive Motors...")
     print("[HARDWARE] Engaging mechanical locking pins on 5-Joint Arm...")
+
 
 # ==============================================================================
 # CORE PROCESSING PIPELINE ENGINE
@@ -106,11 +151,13 @@ class VoiceInterfacePipeline:
     def __init__(self):
         self.p = pyaudio.PyAudio()
         self.is_running = True
-        
+
         # Load local Silero VAD neural network on the host CPU
-        self.model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', trust_repo=True)
+        self.model, utils = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True
+        )
         self.get_speech_timestamps, _, _, _, _ = utils
-        
+
         # Runtime session buffers
         self.speech_buffer = []
         self.is_speaking = False
@@ -118,28 +165,41 @@ class VoiceInterfacePipeline:
         self.speech_start_time = None
         self.noise_buffer = deque(maxlen=CONFIG["CALIBRATION_WINDOW_CHUNKS"])
         self.current_energy_floor = CONFIG["AUDIO_ENERGY_FLOOR"]
+        # ~150ms lookback buffer to prevent chopping off the start of words
+        self.lookback_buffer = deque(maxlen=5)
 
     def start_local_safety_thread(self):
         """Spins up a non-blocking background thread monitoring physical interrupts."""
+
         def safety_loop():
             print("[SAFETY ENGINE] Local hardware keyword monitor active.")
             while self.is_running:
                 time.sleep(0.1)
 
         threading.Thread(target=safety_loop, daemon=True).start()
-    
+
     def send_to_cloud_stt(self, audio_data: bytes):
         """Asynchronously converts raw PCM bytes to WAV and requests inference from Gemini."""
+
         def worker():
             print("[GEMINI API] Processing audio stream via background worker...")
-            print(time.time())
             # Serialize buffer arrays into local memory-mapped WAV containers
             audio_stream = io.BytesIO()
-            with sf.SoundFile(audio_stream, mode='w', format='WAV', samplerate=CONFIG["SAMPLE_RATE"], channels=CONFIG["CHANNELS"], subtype='PCM_16') as f:
-                audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            with sf.SoundFile(
+                audio_stream,
+                mode="w",
+                format="WAV",
+                samplerate=CONFIG["SAMPLE_RATE"],
+                channels=CONFIG["CHANNELS"],
+                subtype="PCM_16",
+            ) as f:
+                audio_np = (
+                    np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+                    / 32768.0
+                )
                 f.write(audio_np)
             audio_stream.seek(0)
-            
+
             try:
                 response = client.models.generate_content(
                     model=CONFIG["GEMINI_MODEL"],
@@ -147,13 +207,13 @@ class VoiceInterfacePipeline:
                         data=audio_stream.read(),
                         mime_type="audio/wav",
                     ),
-                    config=RESPONSE_CONFIG
-                )              
+                    config=RESPONSE_CONFIG,
+                )
                 if response.text and response.text.strip():
                     publish_to_control_loop(response.text)
                 else:
                     print("[SYSTEM] Gemini returned an empty transcription payload.")
-                    
+
             except Exception as e:
                 print(f"[GEMINI ERROR] Content generation failed: {e}")
 
@@ -162,11 +222,11 @@ class VoiceInterfacePipeline:
     def run_pipeline(self):
         """Main interaction processing thread."""
         stream = self.p.open(
-            format=CONFIG["AUDIO_FORMAT"], 
-            channels=CONFIG["CHANNELS"], 
-            rate=CONFIG["SAMPLE_RATE"], 
-            input=True, 
-            frames_per_buffer=CONFIG["CHUNK_SIZE"]
+            format=CONFIG["AUDIO_FORMAT"],
+            channels=CONFIG["CHANNELS"],
+            rate=CONFIG["SAMPLE_RATE"],
+            input=True,
+            frames_per_buffer=CONFIG["CHUNK_SIZE"],
         )
         print("\n[SYSTEM] Sbot pipeline initialized. Awaiting voice prompt input...")
 
@@ -179,41 +239,51 @@ class VoiceInterfacePipeline:
 
             # Scale and convert vector arrays to expected Silero PyTorch dimensions
             audio_float32 = audio_int16.astype(np.float32) / 32768.0
-            tensor_chunk = torch.from_numpy(audio_float32).unsqueeze(0) 
-            
+            tensor_chunk = torch.from_numpy(audio_float32).unsqueeze(0)
+
             # Execute neural VAD
             speech_prob = self.model(tensor_chunk, CONFIG["SAMPLE_RATE"]).item()
-            
+
             # --- DYNAMIC ENVIRONMENT FILTERING ---
             if CONFIG["DYNAMIC_FLOOR_ENABLED"] and not self.is_speaking:
                 # 2. ISOLATION: Only calibrate on frames with extremely low speech probability
-                if speech_prob < 0.3: 
+                if speech_prob < 0.1:
                     self.noise_buffer.append(ac_energy)
-                    
+
                     if len(self.noise_buffer) == self.noise_buffer.maxlen:
                         # 3. OUTLIER REJECTION: Median ignores transient sounds (clicks, thumps)
                         ambient_baseline = np.median(self.noise_buffer)
-                        
+
                         # 4. ADDITIVE SCALING: Maintains a strict, crossable volume gap
-                        calculated_floor = ambient_baseline + CONFIG["NOISE_MARGIN_PADDING"]
-                        
+                        calculated_floor = (
+                            ambient_baseline + CONFIG["NOISE_MARGIN_PADDING"]
+                        )
+
                         # Clamp the floor to prevent network lockouts
                         self.current_energy_floor = max(
-                            CONFIG["MIN_ENERGY_FLOOR"], 
-                            min(calculated_floor, CONFIG["MAX_ENERGY_FLOOR"])
-                        )            
+                            CONFIG["MIN_ENERGY_FLOOR"],
+                            min(calculated_floor, CONFIG["MAX_ENERGY_FLOOR"]),
+                        )
 
             # 5. EARLY EXIT: Drop frame if it lacks acoustic energy AND we are not mid-sentence
             if ac_energy < self.current_energy_floor and not self.is_speaking:
+                self.lookback_buffer.append(audio_chunk)
                 continue
             # -------------------------------------
 
             # Intent capture logic
-            if speech_prob > CONFIG["VAD_CONFIDENCE_GATE"]:  
+            if speech_prob > CONFIG["VAD_CONFIDENCE_GATE"]:
                 if not self.is_speaking:
-                    print(f"[VUI STATE] Listening... User started speaking. (Floor: {self.current_energy_floor:.1f})")
+                    print(
+                        f"[VUI STATE] Listening... User started speaking. (Floor: {self.current_energy_floor:.1f})"
+                    )
                     self.is_speaking = True
                     self.speech_start_time = time.time()
+                    
+                    # Pre-pend the lookback buffer so we don't chop off the first syllable
+                    self.speech_buffer.extend(self.lookback_buffer)
+                    self.lookback_buffer.clear()
+                    
                 self.speech_buffer.append(audio_chunk)
                 self.last_speech_time = time.time()
             else:
@@ -221,22 +291,26 @@ class VoiceInterfacePipeline:
                     current_time = time.time()
                     silence_elapsed = (current_time - self.last_speech_time) * 1000
                     self.speech_buffer.append(audio_chunk)
-                    
+
                     # Check if recording boundaries require closure processing
                     if silence_elapsed > CONFIG["SILENCE_THRESHOLD_MS"]:
-                        print(f"[VUI STATE] Processing... {CONFIG['SILENCE_THRESHOLD_MS']/1000}s silence limit reached.")
-                        
+                        print(
+                            f"[VUI STATE] Processing... {CONFIG['SILENCE_THRESHOLD_MS'] / 1000}s silence limit reached."
+                        )
+
                         full_utterance = b"".join(self.speech_buffer)
                         self.send_to_cloud_stt(full_utterance)
-                        
+
                         # Reset pipeline state machine trackers
                         self.speech_buffer = []
                         self.is_speaking = False
-
+                else:
+                    self.lookback_buffer.append(audio_chunk)
 
         stream.stop_stream()
         stream.close()
         self.p.terminate()
+
 
 if __name__ == "__main__":
     pipeline = VoiceInterfacePipeline()
