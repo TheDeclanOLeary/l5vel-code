@@ -3,48 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Robot Control Dashboard</title>
+    <title>Robot Control Center</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-	<div class="dashboard">
-    <div class="panel">
-        <h3>Translation (X, Y, Z)</h3>
-        <div id="joystick-zone" class="joystick-container"></div>
-        
-        <div class="slider-container">
-            <span class="fader-label">Z-Height (Up/Down)</span>
-            <div id="nipple-z" class="nipple-zone-horizontal"></div>
-            <span id="val-z" class="fader-val" style="display:block;">0.00</span>
-        </div>
-    </div>
+    <header class="top-bar">
+        <h1>ROBOT CONTROL CENTER</h1>
+        <div id="connection-status" class="status-badge status-warning" role="alert">Connecting...</div>
+    </header>
 
-    <div class="panel video-zone">
-        <h3>Main Camera</h3>
-        <video autoplay playsinline muted></video>
-        <div id="connection-status" class="status-text">Connecting to Robot...</div>
-    </div>
+    <main class="dashboard">
+        <aside class="panel left-panel">
+            <section class="control-group">
+                <h2>Control Mode</h2>
+                <div class="mode-toggle" role="group" aria-label="Control Mode">
+                    <button id="mode-arm" class="btn mode-btn active" aria-pressed="true">Arm Control</button>
+                    <button id="mode-base" class="btn mode-btn" aria-pressed="false">Base Drive</button>
+                </div>
+            </section>
 
-    <div class="panel">
-        <h3>Head Orientation</h3>
-        <div class="arm-faders" style="justify-content: center; gap: 40px;">
-            <div class="fader-track">
-                <span class="fader-label">Pitch</span>
-                <div id="nipple-pitch" class="nipple-zone"></div>
-                <span id="val-pitch" class="fader-val">0.00</span>
+            <section class="control-group">
+                <h2>Preset Actions</h2>
+                <div class="preset-grid">
+                    <button class="btn btn-preset" data-action="home">Home / Reset</button>
+                    <button class="btn btn-preset" data-action="wave">Wave Hello</button>
+                    <button class="btn btn-preset" data-action="look down">Look Down</button>
+                    <button class="btn btn-preset" data-action="stow">Stow Arm</button>
+                </div>
+            </section>
+        </aside>
+
+        <section class="panel center-panel">
+            <div class="video-container">
+                <video autoplay playsinline muted aria-label="Main Robot Camera Feed"></video>
+                <div class="crosshair"></div>
             </div>
-            <div class="fader-track">
-                <span class="fader-label">Roll</span>
-                <div id="nipple-roll" class="nipple-zone"></div>
-                <span id="val-roll" class="fader-val">0.00</span>
+            
+            <div class="safety-bar">
+                <button class="btn btn-estop" id="btn-estop" aria-label="Emergency Stop">EMERGENCY STOP</button>
+                <button class="btn btn-clear" id="btn-reset" aria-label="Clear Error">Clear Fault</button>
             </div>
-        </div>
-        <div class="utility-zone" style="margin-top: 30px; text-align: center;">
-    <button class="btn btn-estop" id="btn-estop" style="background: red; color: white;">EMERGENCY STOP</button>
-    <button class="btn btn-preset" id="btn-reset" style="background: #ffc107; color: black; margin-left: 10px;">Clear Error / Reset</button>
-</div>
-    </div>
-</div>		
+        </section>
+
+        <aside class="panel right-panel">
+            <div id="arm-controls" class="control-view active-view">
+                <div class="control-group">
+                    <h2>Translation (X, Y)</h2>
+                    <div id="joystick-xy" class="joystick-zone square-zone"></div>
+                </div>
+
+                <div class="control-group slider-group">
+                    <h2>Z-Height</h2>
+                    <div id="nipple-z" class="nipple-zone-horizontal"></div>
+                    <span id="val-z" class="telemetry-val">0.00</span>
+                </div>
+
+                <div class="control-group">
+                    <h2>Head Orientation</h2>
+                    <div class="fader-row">
+                        <div class="fader-col">
+                            <span class="label">Pitch</span>
+                            <div id="nipple-pitch" class="nipple-zone-vertical"></div>
+                            <span id="val-pitch" class="telemetry-val">0.00</span>
+                        </div>
+                        <div class="fader-col">
+                            <span class="label">Roll</span>
+                            <div id="nipple-roll" class="nipple-zone-vertical"></div>
+                            <span id="val-roll" class="telemetry-val">0.00</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="base-controls" class="control-view">
+                <div class="control-group" style="margin-top: 40px;">
+                    <h2>Base Drive (Fwd/Rev/Turn)</h2>
+                    <div id="joystick-base" class="joystick-zone square-zone large-zone"></div>
+                    <p class="helper-text">Push up/down to drive.<br>Push left/right to rotate.</p>
+                </div>
+            </div>
+        </aside>
+    </main>
+
     <script src="/rtcbot.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
     <script src="app.js"></script>

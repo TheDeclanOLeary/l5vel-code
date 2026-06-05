@@ -1,7 +1,12 @@
 import asyncio
 import math
+import mimetypes
 import os
 import time
+
+# Force correct MIME types for Vite frontend assets
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 from aiohttp import web
 from rtcbot import RTCConnection, getRTCBotJS
@@ -104,80 +109,7 @@ async def robot_control_loop():
                         current_impulses[key] = 0.0
 
                 # 1. PREDICTIVE BOUNDARY FILTER
-                next_x = target_pose[0] + current_impulses["x"] * MM_PER_TICK
-                next_y = target_pose[1] + current_impulses["y"] * MM_PER_TICK
-                next_z = target_pose[2] + current_impulses["z"] * MM_PER_TICK
-
-                if (next_x > X_MAX and current_impulses["x"] > 0) or (
-                    next_x < X_MIN and current_impulses["x"] < 0
-                ):
-                    current_impulses["x"] = 0.0
-                if (next_y > Y_MAX and current_impulses["y"] > 0) or (
-                    next_y < Y_MIN and current_impulses["y"] < 0
-                ):
-                    current_impulses["y"] = 0.0
-                if (next_z > Z_MAX and current_impulses["z"] > 0) or (
-                    next_z < Z_MIN and current_impulses["z"] < 0
-                ):
-                    current_impulses["z"] = 0.0
-
-                # --- Dynamic Spherical Leash (Vector Dot Product Fix) ---
-                next_rel_z = next_z - SHOULDER_Z_OFFSET
-                radius = math.sqrt(next_x**2 + next_y**2 + next_rel_z**2)
-
-                if radius > 0:  # Prevent division by zero
-                    # 1. Calculate normalized outward vector from shoulder to TCP
-                    u_shoulder_x = next_x / radius
-                    u_shoulder_y = next_y / radius
-                    u_shoulder_z = next_rel_z / radius
-
-                    # 2. Calculate Tool's Forward Vector from Roll, Pitch, Yaw
-                    r = math.radians(target_pose[3])
-                    p = math.radians(target_pose[4])
-                    y = math.radians(target_pose[5])
-
-                    # Apply standard Z-Y-X intrinsic rotation to a forward-facing vector
-                    t_x = math.cos(y) * math.sin(p) * math.cos(r) + math.sin(
-                        y
-                    ) * math.sin(r)
-                    t_y = math.sin(y) * math.sin(p) * math.cos(r) - math.cos(
-                        y
-                    ) * math.sin(r)
-                    t_z = math.cos(p) * math.cos(r)
-
-                    # 3. Dot product calculates true 3D alignment (-1.0 to 1.0)
-                    # 1.0 = Tool points straight out away from base
-                    # 0.0 = Tool points perpendicular (down/sideways)
-                    # -1.0 = Tool points backward toward base
-                    alignment = (
-                        (u_shoulder_x * t_x)
-                        + (u_shoulder_y * t_y)
-                        + (u_shoulder_z * t_z)
-                    )
-
-                    # Clamp to 0-1 so we only scale up when reaching outward
-                    extension_ratio = max(0.0, alignment)
-                else:
-                    extension_ratio = 0.0
-
-                # Expand the safe sphere dynamically based on true 3D tool alignment
-                dynamic_max_reach = MAX_REACH_FOLDED + (
-                    (MAX_REACH_EXTENDED - MAX_REACH_FOLDED) * extension_ratio
-                )
-
-                if radius > dynamic_max_reach:
-                    current_rel_z = target_pose[2] - SHOULDER_Z_OFFSET
-                    dot_product = (
-                        (target_pose[0] * current_impulses["x"])
-                        + (target_pose[1] * current_impulses["y"])
-                        + (current_rel_z * current_impulses["z"])
-                    )
-
-                    # Only block movement if the impulse pushes the arm further OUT
-                    if dot_product > 0:
-                        current_impulses["x"] = 0.0
-                        current_impulses["y"] = 0.0
-                        current_impulses["z"] = 0.0
+                _apply_boundary_filter()
 
                 # 2. APPLY FILTERED IMPULSES
                 target_pose[0] += current_impulses["x"] * MM_PER_TICK
@@ -205,6 +137,75 @@ async def robot_control_loop():
             print(f"\n[CRITICAL ERROR] Control Loop Fault: {e}")
 
         await asyncio.sleep(TICK_DURATION)
+
+
+def _apply_boundary_filter():
+    next_x = target_pose[0] + current_impulses["x"] * MM_PER_TICK
+    next_y = target_pose[1] + current_impulses["y"] * MM_PER_TICK
+    next_z = target_pose[2] + current_impulses["z"] * MM_PER_TICK
+
+    if (next_x > X_MAX and current_impulses["x"] > 0) or (
+        next_x < X_MIN and current_impulses["x"] < 0
+    ):
+        current_impulses["x"] = 0.0
+    if (next_y > Y_MAX and current_impulses["y"] > 0) or (
+        next_y < Y_MIN and current_impulses["y"] < 0
+    ):
+        current_impulses["y"] = 0.0
+    if (next_z > Z_MAX and current_impulses["z"] > 0) or (
+        next_z < Z_MIN and current_impulses["z"] < 0
+    ):
+        current_impulses["z"] = 0.0
+
+        # --- Dynamic Spherical Leash (Vector Dot Product Fix) ---
+    next_rel_z = next_z - SHOULDER_Z_OFFSET
+    radius = math.sqrt(next_x**2 + next_y**2 + next_rel_z**2)
+
+    if radius > 0:  # Prevent division by zero
+        # 1. Calculate normalized outward vector from shoulder to TCP
+        u_shoulder_x = next_x / radius
+        u_shoulder_y = next_y / radius
+        u_shoulder_z = next_rel_z / radius
+
+        # 2. Calculate Tool's Forward Vector from Roll, Pitch, Yaw
+        r = math.radians(target_pose[3])
+        p = math.radians(target_pose[4])
+        y = math.radians(target_pose[5])
+
+        # Apply standard Z-Y-X intrinsic rotation to a forward-facing vector
+        t_x = math.cos(y) * math.sin(p) * math.cos(r) + math.sin(y) * math.sin(r)
+        t_y = math.sin(y) * math.sin(p) * math.cos(r) - math.cos(y) * math.sin(r)
+        t_z = math.cos(p) * math.cos(r)
+
+        # 3. Dot product calculates true 3D alignment (-1.0 to 1.0)
+        # 1.0 = Tool points straight out away from base
+        # 0.0 = Tool points perpendicular (down/sideways)
+        # -1.0 = Tool points backward toward base
+        alignment = (u_shoulder_x * t_x) + (u_shoulder_y * t_y) + (u_shoulder_z * t_z)
+
+        # Clamp to 0-1 so we only scale up when reaching outward
+        extension_ratio = max(0.0, alignment)
+    else:
+        extension_ratio = 0.0
+
+        # Expand the safe sphere dynamically based on true 3D tool alignment
+    dynamic_max_reach = MAX_REACH_FOLDED + (
+        (MAX_REACH_EXTENDED - MAX_REACH_FOLDED) * extension_ratio
+    )
+
+    if radius > dynamic_max_reach:
+        current_rel_z = target_pose[2] - SHOULDER_Z_OFFSET
+        dot_product = (
+            (target_pose[0] * current_impulses["x"])
+            + (target_pose[1] * current_impulses["y"])
+            + (current_rel_z * current_impulses["z"])
+        )
+
+        # Only block movement if the impulse pushes the arm further OUT
+        if dot_product > 0:
+            current_impulses["x"] = 0.0
+            current_impulses["y"] = 0.0
+            current_impulses["z"] = 0.0
 
 
 # --- WebRTC Data Handler ---
@@ -255,95 +256,21 @@ app = web.Application()
 
 
 async def index_handler(request):
-    with open("dashboard/index.html", "r") as f:
+    with open("frontend/dist/index.html", "r") as f:
         return web.Response(text=f.read(), content_type="text/html")
 
 
-async def rtcbotjs_handler(request):
+async def rtcbotjs_handler(request) -> web.Response:
     return web.Response(content_type="application/javascript", text=getRTCBotJS())
 
 
-async def connect_handler(request):
+async def connect_handler(request) -> web.Response:
     try:
         client_offer = await request.json()
         server_response = await conn.getLocalDescription(client_offer)
         return web.json_response(server_response)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
-
-
-def execute_arch_move(target_pose, speed=50):
-    """Safely paths to a coordinate by arching Z upwards to avoid the robot's base/singularity zones."""
-    if "robot" not in globals() or not robot.is_connected():
-        return
-
-    code, current_pos = robot.api_get_position(is_radian=False)
-    if code != 0:
-        return
-
-    def move_j(pose):
-        # Uses the handler's built-in IK solver which returns the array directly
-        ik_sol = robot.api_get_ik_sol(pose)
-        if ik_sol is not None:
-            return robot.api_set_servo_angle(
-                angle=ik_sol, speed=40, is_radian=False, wait=True
-            )
-        print(f"[ARCH MOVE] IK Failed for pose: {pose}")
-        return -1
-
-    xy_dist = math.sqrt(
-        (target_pose[0] - current_pos[0]) ** 2 + (target_pose[1] - current_pos[1]) ** 2
-    )
-    z_dist = abs(target_pose[2] - current_pos[2])
-
-    if xy_dist > 150.0 or z_dist > 150.0:
-        traverse_z = max(550.0, current_pos[2], target_pose[2])
-
-        if traverse_z - current_pos[2] > 1.0:
-            ret = move_j(
-                [
-                    current_pos[0],
-                    current_pos[1],
-                    traverse_z,
-                    current_pos[3],
-                    current_pos[4],
-                    current_pos[5],
-                ]
-            )
-            if ret != 0:
-                print(f"[ARCH MOVE] Step 1 Failed: Error {ret}")
-
-        ret = move_j(
-            [
-                target_pose[0],
-                target_pose[1],
-                traverse_z,
-                target_pose[3],
-                target_pose[4],
-                target_pose[5],
-            ]
-        )
-        if ret != 0:
-            print(f"[ARCH MOVE] Step 2 Failed: Error {ret}")
-
-        ret = move_j(target_pose)
-        if ret != 0:
-            print(f"[ARCH MOVE] Step 3 Failed: Error {ret}")
-
-    else:
-        # Uses the handler's safe set_position API wrapper
-        ret = robot.api_set_position(
-            x=target_pose[0],
-            y=target_pose[1],
-            z=target_pose[2],
-            roll=target_pose[3],
-            pitch=target_pose[4],
-            yaw=target_pose[5],
-            speed=speed,
-            wait=True,
-        )
-        if ret != 0:
-            print(f"[ARCH MOVE] Linear Move Failed: Error {ret}")
 
 
 async def play_trajectory(traj):
@@ -364,7 +291,7 @@ async def play_trajectory(traj):
             robot.xarm_clean_error()
             time.sleep(0.1)
 
-        execute_arch_move(start_pose, speed=50)
+        robot.api_set_position(start_pose, speed=50)
         # Handler lacks a trajectory wrapper, so we access the arm directly
         robot.arm.playback_trajectory(times=1, filename=filename, wait=True)
         return robot.api_get_position(is_radian=False)
@@ -406,7 +333,7 @@ async def move_robot_discrete(dx=0.0, dy=0.0, dz=0.0, absolute_pose=None):
             robot.xarm_clean_error()
             time.sleep(0.1)
 
-        execute_arch_move(new_pose, speed=50)
+        robot.api_set_position(new_pose, speed=50)
         return robot.api_get_position(is_radian=False)
 
     code, current_hardware_pos = await asyncio.to_thread(blocking_move)
@@ -478,7 +405,9 @@ app.router.add_get("/rtcbot.js", rtcbotjs_handler)
 app.router.add_post("/connect", connect_handler)
 app.router.add_post("/voice_in", voice_command_handler)
 app.router.add_static(
-    "/", path=os.path.dirname(os.path.abspath(__file__)), name="static"
+    "/",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist"),
+    name="static",
 )
 
 
